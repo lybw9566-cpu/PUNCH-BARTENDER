@@ -192,38 +192,69 @@ with st.sidebar:
         else:
             st.warning("🤔 未找到相似配方，请换个词试试")
 
-# --- 📋 主界面：展示配方详情卡片 (如果有选中) ---
+# ==========================================
+# 📋 主界面：智能翻译配方卡片
+# ==========================================
 if selected_recipe_id is not None:
-    # 获取选中行的数据
-    recipe_data = df.iloc[selected_recipe_id]
+    # 1. 获取原始英文数据
+    raw_data = df.iloc[selected_recipe_id]
     
-    # 渲染卡片容器
+    # 2. 构建翻译请求 Prompt
+    translation_prompt = f"""
+    【任务】
+    请将以下鸡尾酒配方翻译成中文，并按照 Markdown 格式排版。
+    
+    【原始数据】
+    Name: {raw_data['title']}
+    Intro: {raw_data['intro_philosophy']}
+    Ingredients: {raw_data['ingredients']}
+    Instructions: {raw_data['instructions']}
+    Tags: {raw_data.get('tags', '')}
+
+    【要求】
+    1. 标题用 H2 (##) 加 emoji。
+    2. 简介用引用格式 (>)。
+    3. 原料用列表，保留原始用量（如 2 oz），但在括号里估算 ml 数（1 oz ≈ 30ml）。
+    4. 步骤必须清晰易懂。
+    5. 语气：像一位优雅的侍酒师在介绍。
+    """
+
+    # 3. 显示加载动画并调用 AI
     with st.container(border=True):
-        col_close, col_title = st.columns([1, 8])
-        with col_title:
-            st.header(f"🍹 {recipe_data['title']}")
+        # 如果用户频繁点击，每次都翻译有点浪费，但在 Streamlit 里这是最简单的写法
+        # 如果你介意速度，可以使用 @st.cache_data 缓存翻译结果
         
-        # 显示简介
-        st.info(f"💡 {recipe_data['intro_philosophy']}")
-        
-        c1, c2 = st.columns(2)
-        with c1:
-            st.subheader("🧂 原料 Ingredients")
-            # 处理原料列表显示
-            ingredients_list = recipe_data['ingredients']
-            if isinstance(ingredients_list, str):
-                st.write(ingredients_list)
-            elif isinstance(ingredients_list, list):
-                for ing in ingredients_list:
-                    st.markdown(f"- {ing}")
+        with st.spinner(f"正在将 {raw_data['title']} 翻译为中文..."):
+            try:
+                trans_response = client.chat.completions.create(
+                    model=MODEL_NAME, # 使用 gpt-4o-mini 速度极快
+                    messages=[{"role": "user", "content": translation_prompt}],
+                    temperature=0.3, # 翻译需要准确，温度调低
+                    max_tokens=2000
+                )
+                translated_content = trans_response.choices[0].message.content
+                
+                # 4. 展示翻译后的结果
+                # 关闭按钮 (其实只是清空选中状态，但在 Streamlit 需要重新加载)
+                col1, col2 = st.columns([9, 1])
+                with col2:
+                    if st.button("❌", help("关闭卡片")):
+                        selected_recipe_id = None
+                        st.rerun()
+                
+                # 渲染 AI 写好的 Markdown
+                st.markdown(translated_content)
+                
+                # 5. 在底部显示原始英文（折叠），方便核对
+                with st.expander("🔍 查看原始英文配方 (Original Recipe)"):
+                    st.write(raw_data.to_dict())
                     
-        with c2:
-            st.subheader("🥣 做法 Instructions")
-            st.write(recipe_data['instructions'])
-            
-        st.caption(f"Tags: {recipe_data.get('tags', 'Classic')}")
-        
-    st.markdown("---") # 分割线，下面是聊天区
+            except Exception as e:
+                st.error(f"翻译服务开小差了: {e}")
+                # 如果翻译失败，兜底显示英文
+                st.write(raw_data)
+
+    st.markdown("---") # 分割线
 
 # --- 💬 聊天区域 (AI 侍酒师) ---
 st.caption(f"私人定制 · {MODEL_NAME}")
