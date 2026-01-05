@@ -104,7 +104,7 @@ if df is None:
     st.error(f"❌ 找不到数据文件 {DATA_FILE}")
     st.stop()
 
-# --- 3. 核心逻辑 (最终修复版) ---
+# --- 3. 核心逻辑 (GPT 通用版) ---
 def get_ai_recommendation(user_query):
     # === A. 检索 ===
     try:
@@ -157,23 +157,13 @@ def get_ai_recommendation(user_query):
                 {"role": "user", "content": combined_prompt}
             ],
             temperature=0.7,
-            # 👇 注意这里，每个参数后面都有逗号
             max_tokens=4096, 
-            presence_penalty=0.6,
-            
-            # 👇 强制关闭安全审查，防止返回空结果
-            extra_body={
-                "safetySettings": [
-                    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-                    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-                    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-                    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-                ]
-            }
+            presence_penalty=0.6
+            # 🔴 注意：我删除了 extra_body 参数，因为 GPT 不需要它，也不会拦截酒精内容。
         )
         
         if not response.choices:
-            return f"⚠️ API 返回了空结果。\n可能原因：中转商拦截了 Safety Settings。\n建议方案：请去 Streamlit Secrets 将模型改为 'gpt-4o' 或 'gpt-3.5-turbo'。", candidates
+            return f"⚠️ API 返回空结果。请检查 Secrets 中的模型名称是否正确 (推荐 gpt-4o-mini)。", candidates
             
         return response.choices[0].message.content, candidates
 
