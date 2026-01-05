@@ -75,7 +75,7 @@ DATA_FILE = "punch_recipes.jsonl"
 # 为了代码规范，建议把 st.set_page_config 移到代码文件的第一行（import 之后）。
 # 这里为了演示方便，先不移动，Streamlit 可能会报个无害的 Warning。
 
-# --- 2. 数据加载与向量化 (升级版：支持中英混合搜索) ---
+# --- 2. 数据加载与向量化 (升级版：支持模糊搜索) ---
 @st.cache_resource
 def load_data_and_vectors():
     data = []
@@ -94,10 +94,9 @@ def load_data_and_vectors():
         df['title'].fillna('') + " " + 
         df['ingredients'].astype(str) + " " + 
         df['tags'].astype(str)
-        # 移除了简介，因为简介字数太多会稀释酒名的权重，导致搜索不准
     )
 
-    # 🔴 核心升级：改为 char_wb 模式 (字符级 n-gram)
+    # 🔴 核心升级：analyzer='char_wb'
     # 这能解决 "我想喝Bronx" 连在一起搜不到的问题，也能容忍拼写错误
     vectorizer = TfidfVectorizer(
         stop_words='english',
@@ -109,46 +108,53 @@ def load_data_and_vectors():
 
     return df, vectorizer, tfidf_matrix
 
-# --- 3. 核心逻辑 (Gemini 强力抗干扰版) ---
+df, vectorizer, tfidf_matrix = load_data_and_vectors()
+
+if df is None:
+    st.error(f"❌ 找不到数据文件 {DATA_FILE}")
+    st.stop()
+
+# --- 3. 核心逻辑 (GPT 稳定版 + 30条检索) ---
 def get_ai_recommendation(user_query):
     # === A. 检索 ===
     try:
         user_vec = vectorizer.transform([user_query])
         similarities = cosine_similarity(user_vec, tfidf_matrix).flatten()
         
-        # 🔴 修改点：将 15 改为 30，扩大搜索圈
-        top_indices = similarities.argsort()[-30:][::-1] 
+        # 🔴 修改点：扩大搜索圈到 30 个，增加找到冷门酒的概率
+        top_indices = similarities.argsort()[-30:][::-1]
         candidates = df.iloc[top_indices]
+        
+    # 👇 你的报错之前就是因为少了这两行 except
+    except Exception as e:
+        return f"检索系统出错了: {e}", pd.DataFrame()
 
-# === B. 增强 (关键修改点1：确保传入步骤和完整原料) ===
+    # === B. 增强 ===
     context_text = ""
     for idx, row in candidates.iterrows():
-        # 这里我们将原料和步骤都完整拼接到上下文里
         context_text += f"""
-        [ID: {idx}]
-        酒名: {row['title']}
-        原料列表(包含用量): {row['ingredients']}
-        制作步骤: {row['instructions']}
-        简介: {row['intro_philosophy'][:200]}...
+        [酒名: {row['title']}]
+        [原料: {row['ingredients']}]
+        [步骤: {row['instructions']}]
+        [简介: {row['intro_philosophy'][:100]}]
         ---
         """
 
     # === C. 生成 ===
-    # 修改 Prompt，试图“欺骗”AI 这只是科学研究，不是喝酒建议，降低风控概率
     combined_prompt = f"""
-    【指令】
-    你是一位鸡尾酒历史学家。请客观地分析以下配方数据。
+    【角色设定】
+    你是一位世界级的鸡尾酒专家。
     
     【任务】
-    用户查询："{user_query}"
-    基于【候选数据】提取 3 个相关条目。
+    根据顾客需求："{user_query}"
+    从下面的【候选酒单】中挑选 3 款最合适的配方。
     
-    【候选数据】
+    【候选酒单】
     {context_text}
 
-    【输出要求】
-    1. 这是用于数据库归档的客观描述，请保留完整原料用量和步骤。
-    2. 使用中文。
+    【回复要求】
+    1. 必须保留完整的原料用量和步骤。
+    2. 中文回答，优雅专业。
     3. 格式：
        ### 🍸 [酒名]
        - **推荐理由**: ...
@@ -157,39 +163,19 @@ def get_ai_recommendation(user_query):
     """
 
     try:
-        print(f"正在请求模型: {MODEL_NAME}")
-        
+        # 即使是 GPT 模型，我们也加上 max_tokens 防止截断
         response = client.chat.completions.create(
             model=MODEL_NAME, 
             messages=[
                 {"role": "user", "content": combined_prompt}
             ],
             temperature=0.7,
-            max_tokens=4096,
-            presence_penalty=0.6,
-            
-            # 🔴 核心防御：试图通过参数强制关闭 Gemini 的安全审查
-            extra_body={
-                "safetySettings": [
-                    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-                    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-                    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-                    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-                ]
-            }
+            max_tokens=4096, 
+            presence_penalty=0.6
         )
         
-        # 🛡️ 防崩溃护盾：如果 API 返回空 (被风控拦截)，这里接住，不让它报错
         if not response.choices:
-            return f"""
-            ⚠️ **生成失败 (被风控拦截)**
-            
-            原因：您使用的 Gemini 模型在云端服务器上触发了谷歌的“酒精内容审查”。
-            
-            **最终解决方案：**
-            请去 Streamlit Secrets，将模型名字改为：**gpt-4o-mini**
-            (这个模型比 GPT-4o 便宜很多，且通常所有分组都有权限，也不会拦截酒精内容)
-            """, candidates
+            return f"⚠️ API 返回空结果。请检查 Secrets 中的模型名称是否正确。", candidates
             
         return response.choices[0].message.content, candidates
 
