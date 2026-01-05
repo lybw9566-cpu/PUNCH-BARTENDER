@@ -207,3 +207,22 @@ if prompt := st.chat_input("描述您的口味..."):
             ai_reply, related = get_ai_recommendation(prompt)
             st.markdown(ai_reply)
     st.session_state.messages.append({"role": "assistant", "content": ai_reply})
+
+    # ... (前面的代码保持不变) ...
+
+# === 🛠️ 新增：侧边栏数据库自检工具 ===
+with st.sidebar:
+    st.header("🔍 数据库自检")
+    check_query = st.text_input("输入酒名检查数据库是否存在", placeholder="例如: Bronx")
+    
+    if check_query:
+        # 简单的文本匹配，不走向量搜索
+        found = df[df['title'].str.contains(check_query, case=False, na=False)]
+        
+        if not found.empty:
+            st.success(f"✅ 找到了 {len(found)} 条记录！")
+            for i, row in found.iterrows():
+                st.write(f"ID: {i} | {row['title']}")
+        else:
+            st.error("❌ 数据库里真的没有...")
+            st.caption(f"当前加载的数据总量: {len(df)} 条")
