@@ -104,48 +104,74 @@ if df is None:
     st.error(f"❌ 找不到数据文件 {DATA_FILE}")
     st.stop()
 
-# --- 3. 核心逻辑 (保持不变) ---
+# --- 3. 核心逻辑 (修复版) ---
 def get_ai_recommendation(user_query):
-    user_vec = vectorizer.transform([user_query])
-    similarities = cosine_similarity(user_vec, tfidf_matrix).flatten()
-    top_indices = similarities.argsort()[-15:][::-1]
-    candidates = df.iloc[top_indices]
+    # === A. 检索 ===
+    try:
+        user_vec = vectorizer.transform([user_query])
+        similarities = cosine_similarity(user_vec, tfidf_matrix).flatten()
+        top_indices = similarities.argsort()[-15:][::-1]
+        candidates = df.iloc[top_indices]
+    except Exception as e:
+        return f"检索系统出错了: {e}", pd.DataFrame()
 
+    # === B. 增强 ===
     context_text = ""
     for idx, row in candidates.iterrows():
         context_text += f"""
-        [ID: {idx}]
-        酒名: {row['title']}
-        原料: {row['ingredients']}
-        步骤: {row['instructions']}
-        简介: {row['intro_philosophy'][:200]}...
+        [酒名: {row['title']}]
+        [原料: {row['ingredients']}]
+        [步骤: {row['instructions']}]
+        [简介: {row['intro_philosophy'][:100]}]
         ---
         """
 
-    system_prompt = f"""
+    # === C. 生成 (关键修改：合并 System Prompt) ===
+    # 我们不使用 system role，而是把它拼接到 user 消息里，这样兼容性最强
+    combined_prompt = f"""
+    【角色设定】
     你是一位世界级的鸡尾酒专家。
-    【候选酒单】：{context_text}
-    【要求】：基于酒单推荐3款，保留完整原料用量和步骤，中文回答，优雅专业。
-    格式参考：
-    ### 🍸 [酒名]
-    - **推荐理由**: ...
-    - **原料**: ...
-    - **步骤**: ...
+    
+    【任务】
+    根据顾客需求："{user_query}"
+    从下面的【候选酒单】中挑选 3 款最合适的配方。
+    
+    【候选酒单】
+    {context_text}
+
+    【回复要求】
+    1. 必须保留完整的原料用量和步骤。
+    2. 中文回答，优雅专业。
+    3. 格式：
+       ### 🍸 [酒名]
+       - **推荐理由**: ...
+       - **原料**: ...
+       - **步骤**: ...
     """
 
     try:
+        # 打印调试信息到后台日志 (Streamlit Manage App 右下角的日志里能看到)
+        print(f"正在请求模型: {MODEL_NAME}")
+        
         response = client.chat.completions.create(
             model=MODEL_NAME, 
             messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"顾客需求：{user_query}"}
+                # 🔴 修改点：只使用 user 角色，避开 system 角色 bug
+                {"role": "user", "content": combined_prompt}
             ],
-            temperature=0.7
+            temperature=0.7,
+            # 🔴 增加 max_tokens 防止截断，也防止空返回
+            max_tokens=2000 
         )
+        
+        # 🕵️‍♀️ 侦探逻辑：检查返回结果
+        if not response.choices:
+            return f"⚠️ API 返回了空结果。\n可能原因：触发了 Gemini 的安全风控（认为涉及酒精敏感话题）。\n请尝试换个问法，或者检查 API 供应商是否屏蔽了 Gemini 的 Safety Settings。", candidates
+            
         return response.choices[0].message.content, candidates
-    except Exception as e:
-        return f"连接出错: {e}", pd.DataFrame()
 
+    except Exception as e:
+        return f"❌ AI 连接依然报错: {str(e)}", pd.DataFrame()
 # --- 4. 界面 UI (保持不变) ---
 # 这里为了美观，我们重新显示一下 Title，因为登录成功后才展示主界面
 st.title("🍸 Punch AI 侍酒师")
