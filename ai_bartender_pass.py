@@ -150,28 +150,48 @@ def get_ai_recommendation(user_query):
     """
 
     try:
-        # 打印调试信息到后台日志 (Streamlit Manage App 右下角的日志里能看到)
         print(f"正在请求模型: {MODEL_NAME}")
         
         response = client.chat.completions.create(
             model=MODEL_NAME, 
             messages=[
-                # 🔴 修改点：只使用 user 角色，避开 system 角色 bug
                 {"role": "user", "content": combined_prompt}
             ],
             temperature=0.7,
-            # 🔴 增加 max_tokens 防止截断，也防止空返回
-            max_tokens=2000 
+            max_tokens=4096, # 保持这个大数字，防止说话说一半
+            presence_penalty=0.6
+            
+            # 🔴 关键修改：增加 extra_body 参数，强制关闭 Gemini 的安全审查
+            extra_body={
+                "safetySettings": [
+                    {
+                        "category": "HARM_CATEGORY_HARASSMENT",
+                        "threshold": "BLOCK_NONE"
+                    },
+                    {
+                        "category": "HARM_CATEGORY_HATE_SPEECH",
+                        "threshold": "BLOCK_NONE"
+                    },
+                    {
+                        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                        "threshold": "BLOCK_NONE"
+                    },
+                    {
+                        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                        "threshold": "BLOCK_NONE"
+                    },
+                ]
+            }
         )
         
-        # 🕵️‍♀️ 侦探逻辑：检查返回结果
+        # 侦探逻辑
         if not response.choices:
-            return f"⚠️ API 返回了空结果。\n可能原因：触发了 Gemini 的安全风控（认为涉及酒精敏感话题）。\n请尝试换个问法，或者检查 API 供应商是否屏蔽了 Gemini 的 Safety Settings。", candidates
+            return f"⚠️ API 依然返回空结果。这说明中转服务商可能强行拦截了安全设置。\n建议：去 Streamlit Secrets 把模型名字改成 'gpt-4o' 或 'gpt-3.5-turbo' 试试（OpenAI 对酒精话题比较宽松）。", candidates
             
         return response.choices[0].message.content, candidates
 
     except Exception as e:
-        return f"❌ AI 连接依然报错: {str(e)}", pd.DataFrame()
+        return f"❌ AI 连接报错: {str(e)}", pd.DataFrame()
 # --- 4. 界面 UI (保持不变) ---
 # 这里为了美观，我们重新显示一下 Title，因为登录成功后才展示主界面
 st.title("🍸 Punch AI 侍酒师")
