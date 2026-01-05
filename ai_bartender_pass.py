@@ -7,51 +7,33 @@ from openai import OpenAI
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-# --- 0. 门卫系统 (核心修改部分) ---
+# --- 0. 门卫系统 ---
 def check_access():
-    """
-    门卫函数：如果没有通过验证，就显示登录框并停止运行后面的代码
-    """
-    # 初始化验证状态
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
 
-    # 如果已经登录成功，直接放行
     if st.session_state.authenticated:
         return True
 
-    # 如果没登录，显示登录界面
     st.title("🔒 这是一个私密应用")
     st.write("请在下方输入邀请码以继续访问。")
     
-    # 获取用户输入
     user_input = st.text_input("请输入邀请码 (Access Key)", type="password")
     
     if st.button("解锁进入"):
-        # 检查邀请码是否在我们的“白名单”里
-        # 注意：我们会把白名单放在 st.secrets 里
         valid_keys = st.secrets.get("access_keys", [])
-        
         if user_input in valid_keys:
             st.session_state.authenticated = True
             st.success("✅ 验证成功！正在加载...")
-            st.rerun() # 刷新页面进入主程序
+            st.rerun()
         else:
-            st.error("❌ 邀请码无效或已失效")
-    
-    # 如果没通过验证，返回 False，阻止后续代码运行
+            st.error("❌ 邀请码无效")
     return False
 
-# 执行门卫检查
 if not check_access():
-    st.stop() # 🛑 停止运行下面的所有代码
-
-# ===========================================
-#  以下是原本的 AI 侍酒师代码 (只有通过上面检查才会运行到这里)
-# ===========================================
+    st.stop()
 
 # --- 1. 配置加载 ---
-# 优先从 Streamlit Cloud 的 Secrets 读取，如果没有则读取本地 .env
 if "OPENAI_API_KEY" in st.secrets:
     API_KEY = st.secrets["OPENAI_API_KEY"]
     BASE_URL = st.secrets["OPENAI_BASE_URL"]
@@ -69,13 +51,10 @@ if not API_KEY:
 client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
 DATA_FILE = "punch_recipes.jsonl"
 
-# ... (保持原本的 Page Config) ...
-# 注意：set_page_config 必须是 Streamlit 命令的第一行，
-# 但为了配合门卫逻辑，我们需要把它移到最最上面，或者接受这里的小警告。
-# 为了代码规范，建议把 st.set_page_config 移到代码文件的第一行（import 之后）。
-# 这里为了演示方便，先不移动，Streamlit 可能会报个无害的 Warning。
+st.set_page_config(page_title="Punch AI 侍酒师", page_icon="🍸", layout="wide") 
+# 注意：layout 改为 'wide' 可以让侧边栏和主内容更宽敞
 
-# --- 2. 数据加载与向量化 (升级版：支持模糊搜索) ---
+# --- 2. 数据加载与向量化 (保持 char_wb 模糊搜索) ---
 @st.cache_resource
 def load_data_and_vectors():
     data = []
@@ -96,12 +75,11 @@ def load_data_and_vectors():
         df['tags'].astype(str)
     )
 
-    # 🔴 核心升级：analyzer='char_wb'
-    # 这能解决 "我想喝Bronx" 连在一起搜不到的问题，也能容忍拼写错误
+    # 使用字符级 n-gram 实现模糊匹配
     vectorizer = TfidfVectorizer(
         stop_words='english',
-        analyzer='char_wb',  # 按字母切分，而不是按单词切分
-        ngram_range=(3, 5)   # 搜索 3 到 5 个字母的组合
+        analyzer='char_wb', 
+        ngram_range=(3, 5)
     )
     
     tfidf_matrix = vectorizer.fit_transform(df['combined_text'])
@@ -114,18 +92,14 @@ if df is None:
     st.error(f"❌ 找不到数据文件 {DATA_FILE}")
     st.stop()
 
-# --- 3. 核心逻辑 (GPT 稳定版 + 30条检索) ---
+# --- 3. 核心 AI 逻辑 ---
 def get_ai_recommendation(user_query):
     # === A. 检索 ===
     try:
         user_vec = vectorizer.transform([user_query])
         similarities = cosine_similarity(user_vec, tfidf_matrix).flatten()
-        
-        # 🔴 修改点：扩大搜索圈到 30 个，增加找到冷门酒的概率
         top_indices = similarities.argsort()[-30:][::-1]
         candidates = df.iloc[top_indices]
-        
-    # 👇 你的报错之前就是因为少了这两行 except
     except Exception as e:
         return f"检索系统出错了: {e}", pd.DataFrame()
 
@@ -163,36 +137,104 @@ def get_ai_recommendation(user_query):
     """
 
     try:
-        # 即使是 GPT 模型，我们也加上 max_tokens 防止截断
         response = client.chat.completions.create(
             model=MODEL_NAME, 
-            messages=[
-                {"role": "user", "content": combined_prompt}
-            ],
+            messages=[{"role": "user", "content": combined_prompt}],
             temperature=0.7,
             max_tokens=4096, 
             presence_penalty=0.6
         )
-        
         if not response.choices:
-            return f"⚠️ API 返回空结果。请检查 Secrets 中的模型名称是否正确。", candidates
-            
+            return f"⚠️ API 返回空结果。", candidates
         return response.choices[0].message.content, candidates
 
     except Exception as e:
         return f"❌ AI 连接报错: {str(e)}", pd.DataFrame()
-# --- 4. 界面 UI (保持不变) ---
-# 这里为了美观，我们重新显示一下 Title，因为登录成功后才展示主界面
+
+# ==========================================
+# 🎨 界面布局开始
+# ==========================================
+
 st.title("🍸 Punch AI 侍酒师")
+
+# --- 🔍 侧边栏：超级模糊搜索 ---
+with st.sidebar:
+    st.header("📖 配方百科全书")
+    # 1. 搜索框
+    search_query = st.text_input("🔍 搜索配方 (支持模糊拼写)", placeholder="例如: Bronx 或 margrita")
+    
+    selected_recipe_id = None
+    
+    if search_query:
+        # 复用那个强大的向量搜索引擎
+        # 即使你输错 "Mrgarita"，它也能算出它是 Margarita
+        search_vec = vectorizer.transform([search_query])
+        sims = cosine_similarity(search_vec, tfidf_matrix).flatten()
+        
+        # 找出最相似的 10 个
+        top_indices = sims.argsort()[-10:][::-1]
+        
+        # 制作下拉菜单选项字典: { "酒名": ID }
+        options_map = {}
+        for i in top_indices:
+            row = df.iloc[i]
+            # 如果相似度太低(小于0.1)，可能是噪音，不显示
+            if sims[i] > 0.1:
+                options_map[f"{row['title']}"] = i
+        
+        if options_map:
+            st.success(f"找到 {len(options_map)} 个相关结果:")
+            # 2. 下拉选择框
+            selected_name = st.selectbox("👇 点击选择查看详情:", list(options_map.keys()))
+            
+            if selected_name:
+                selected_recipe_id = options_map[selected_name]
+        else:
+            st.warning("🤔 未找到相似配方，请换个词试试")
+
+# --- 📋 主界面：展示配方详情卡片 (如果有选中) ---
+if selected_recipe_id is not None:
+    # 获取选中行的数据
+    recipe_data = df.iloc[selected_recipe_id]
+    
+    # 渲染卡片容器
+    with st.container(border=True):
+        col_close, col_title = st.columns([1, 8])
+        with col_title:
+            st.header(f"🍹 {recipe_data['title']}")
+        
+        # 显示简介
+        st.info(f"💡 {recipe_data['intro_philosophy']}")
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            st.subheader("🧂 原料 Ingredients")
+            # 处理原料列表显示
+            ingredients_list = recipe_data['ingredients']
+            if isinstance(ingredients_list, str):
+                st.write(ingredients_list)
+            elif isinstance(ingredients_list, list):
+                for ing in ingredients_list:
+                    st.markdown(f"- {ing}")
+                    
+        with c2:
+            st.subheader("🥣 做法 Instructions")
+            st.write(recipe_data['instructions'])
+            
+        st.caption(f"Tags: {recipe_data.get('tags', 'Classic')}")
+        
+    st.markdown("---") # 分割线，下面是聊天区
+
+# --- 💬 聊天区域 (AI 侍酒师) ---
 st.caption(f"私人定制 · {MODEL_NAME}")
 
 if "messages" not in st.session_state:
-    st.session_state.messages = [{"role": "assistant", "content": "您好，我是您的私人侍酒师。由于这是私人服务器，感谢您的邀请码验证。\n\n请告诉我您想喝点什么？"}]
+    st.session_state.messages = [{"role": "assistant", "content": "您好！您可以在左侧搜索特定的配方卡片，也可以直接在这里告诉我您的口味，让我为您推荐。"}]
 
 for msg in st.session_state.messages:
     st.chat_message(msg["role"]).write(msg["content"])
 
-if prompt := st.chat_input("描述您的口味..."):
+if prompt := st.chat_input("描述您的口味，或让 AI 推荐..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     st.chat_message("user").write(prompt)
     with st.chat_message("assistant"):
@@ -200,22 +242,3 @@ if prompt := st.chat_input("描述您的口味..."):
             ai_reply, related = get_ai_recommendation(prompt)
             st.markdown(ai_reply)
     st.session_state.messages.append({"role": "assistant", "content": ai_reply})
-
-    # ... (前面的代码保持不变) ...
-
-# === 🛠️ 新增：侧边栏数据库自检工具 ===
-with st.sidebar:
-    st.header("🔍 数据库自检")
-    check_query = st.text_input("输入酒名检查数据库是否存在", placeholder="例如: Bronx")
-    
-    if check_query:
-        # 简单的文本匹配，不走向量搜索
-        found = df[df['title'].str.contains(check_query, case=False, na=False)]
-        
-        if not found.empty:
-            st.success(f"✅ 找到了 {len(found)} 条记录！")
-            for i, row in found.iterrows():
-                st.write(f"ID: {i} | {row['title']}")
-        else:
-            st.error("❌ 数据库里真的没有...")
-            st.caption(f"当前加载的数据总量: {len(df)} 条")
