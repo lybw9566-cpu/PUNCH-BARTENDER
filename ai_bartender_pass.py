@@ -75,7 +75,7 @@ DATA_FILE = "punch_recipes.jsonl"
 # 为了代码规范，建议把 st.set_page_config 移到代码文件的第一行（import 之后）。
 # 这里为了演示方便，先不移动，Streamlit 可能会报个无害的 Warning。
 
-# --- 2. 数据加载与向量化 (保持不变) ---
+# --- 2. 数据加载与向量化 (升级版：支持中英混合搜索) ---
 @st.cache_resource
 def load_data_and_vectors():
     data = []
@@ -88,21 +88,26 @@ def load_data_and_vectors():
         return None, None, None
 
     df = pd.DataFrame(data)
+
+    # 混合文本用于搜索
     df['combined_text'] = (
         df['title'].fillna('') + " " + 
-        df['intro_philosophy'].fillna('') + " " + 
         df['ingredients'].astype(str) + " " + 
         df['tags'].astype(str)
+        # 移除了简介，因为简介字数太多会稀释酒名的权重，导致搜索不准
     )
-    vectorizer = TfidfVectorizer(stop_words='english')
+
+    # 🔴 核心升级：改为 char_wb 模式 (字符级 n-gram)
+    # 这能解决 "我想喝Bronx" 连在一起搜不到的问题，也能容忍拼写错误
+    vectorizer = TfidfVectorizer(
+        stop_words='english',
+        analyzer='char_wb',  # 按字母切分，而不是按单词切分
+        ngram_range=(3, 5)   # 搜索 3 到 5 个字母的组合
+    )
+    
     tfidf_matrix = vectorizer.fit_transform(df['combined_text'])
+
     return df, vectorizer, tfidf_matrix
-
-df, vectorizer, tfidf_matrix = load_data_and_vectors()
-
-if df is None:
-    st.error(f"❌ 找不到数据文件 {DATA_FILE}")
-    st.stop()
 
 # --- 3. 核心逻辑 (Gemini 强力抗干扰版) ---
 def get_ai_recommendation(user_query):
@@ -110,10 +115,10 @@ def get_ai_recommendation(user_query):
     try:
         user_vec = vectorizer.transform([user_query])
         similarities = cosine_similarity(user_vec, tfidf_matrix).flatten()
-        top_indices = similarities.argsort()[-15:][::-1]
+        
+        # 🔴 修改点：将 15 改为 30，扩大搜索圈
+        top_indices = similarities.argsort()[-30:][::-1] 
         candidates = df.iloc[top_indices]
-    except Exception as e:
-        return f"检索系统出错了: {e}", pd.DataFrame()
 
     # === B. 增强 ===
     context_text = ""
