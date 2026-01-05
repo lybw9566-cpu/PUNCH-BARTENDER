@@ -120,14 +120,16 @@ def get_ai_recommendation(user_query):
         top_indices = similarities.argsort()[-30:][::-1] 
         candidates = df.iloc[top_indices]
 
-    # === B. 增强 ===
+# === B. 增强 (关键修改点1：确保传入步骤和完整原料) ===
     context_text = ""
     for idx, row in candidates.iterrows():
+        # 这里我们将原料和步骤都完整拼接到上下文里
         context_text += f"""
-        [酒名: {row['title']}]
-        [原料: {row['ingredients']}]
-        [步骤: {row['instructions']}]
-        [简介: {row['intro_philosophy'][:100]}]
+        [ID: {idx}]
+        酒名: {row['title']}
+        原料列表(包含用量): {row['ingredients']}
+        制作步骤: {row['instructions']}
+        简介: {row['intro_philosophy'][:200]}...
         ---
         """
 
