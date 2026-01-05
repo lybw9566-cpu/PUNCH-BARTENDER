@@ -104,7 +104,7 @@ if df is None:
     st.error(f"❌ 找不到数据文件 {DATA_FILE}")
     st.stop()
 
-# --- 3. 核心逻辑 (修复版) ---
+# --- 3. 核心逻辑 (最终修复版) ---
 def get_ai_recommendation(user_query):
     # === A. 检索 ===
     try:
@@ -126,8 +126,7 @@ def get_ai_recommendation(user_query):
         ---
         """
 
-    # === C. 生成 (关键修改：合并 System Prompt) ===
-    # 我们不使用 system role，而是把它拼接到 user 消息里，这样兼容性最强
+    # === C. 生成 ===
     combined_prompt = f"""
     【角色设定】
     你是一位世界级的鸡尾酒专家。
@@ -158,35 +157,23 @@ def get_ai_recommendation(user_query):
                 {"role": "user", "content": combined_prompt}
             ],
             temperature=0.7,
-            max_tokens=4096, # 保持这个大数字，防止说话说一半
-            presence_penalty=0.6
+            # 👇 注意这里，每个参数后面都有逗号
+            max_tokens=4096, 
+            presence_penalty=0.6,
             
-            # 🔴 关键修改：增加 extra_body 参数，强制关闭 Gemini 的安全审查
+            # 👇 强制关闭安全审查，防止返回空结果
             extra_body={
                 "safetySettings": [
-                    {
-                        "category": "HARM_CATEGORY_HARASSMENT",
-                        "threshold": "BLOCK_NONE"
-                    },
-                    {
-                        "category": "HARM_CATEGORY_HATE_SPEECH",
-                        "threshold": "BLOCK_NONE"
-                    },
-                    {
-                        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                        "threshold": "BLOCK_NONE"
-                    },
-                    {
-                        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-                        "threshold": "BLOCK_NONE"
-                    },
+                    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
                 ]
             }
         )
         
-        # 侦探逻辑
         if not response.choices:
-            return f"⚠️ API 依然返回空结果。这说明中转服务商可能强行拦截了安全设置。\n建议：去 Streamlit Secrets 把模型名字改成 'gpt-4o' 或 'gpt-3.5-turbo' 试试（OpenAI 对酒精话题比较宽松）。", candidates
+            return f"⚠️ API 返回了空结果。\n可能原因：中转商拦截了 Safety Settings。\n建议方案：请去 Streamlit Secrets 将模型改为 'gpt-4o' 或 'gpt-3.5-turbo'。", candidates
             
         return response.choices[0].message.content, candidates
 
