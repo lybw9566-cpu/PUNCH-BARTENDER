@@ -1,3 +1,4 @@
+import random  # <--- 别忘了在文件最顶部的 import 区域加上这句
 import streamlit as st
 import pandas as pd
 import json
@@ -6,6 +7,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+
 
 # --- 0. 门卫系统 ---
 def check_access():
@@ -51,7 +53,7 @@ if not API_KEY:
 client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
 DATA_FILE = "punch_recipes.jsonl"
 
-st.set_page_config(page_title="Punch AI 侍酒师", page_icon="🍸", layout="wide") 
+st.set_page_config(page_title="Punch AI 调酒师", page_icon="🍸", layout="wide") 
 # 注意：layout 改为 'wide' 可以让侧边栏和主内容更宽敞
 
 # --- 2. 数据加载与向量化 (保持 char_wb 模糊搜索) ---
@@ -92,57 +94,80 @@ if df is None:
     st.error(f"❌ 找不到数据文件 {DATA_FILE}")
     st.stop()
 
-# --- 3. 核心 AI 逻辑 ---
+# --- 3. 核心 AI 逻辑 (升级版：增加随机多样性) ---
 def get_ai_recommendation(user_query):
     # === A. 检索 ===
     try:
         user_vec = vectorizer.transform([user_query])
         similarities = cosine_similarity(user_vec, tfidf_matrix).flatten()
-        top_indices = similarities.argsort()[-30:][::-1]
-        candidates = df.iloc[top_indices]
+        
+        # 🔴 关键修改 1: 扩大候选池 (鱼塘)
+        # 以前我们只取前 30 (argsort()[-30:])，它们永远是固定的。
+        # 现在我们取前 100 个，这些都是相关性不错的酒。
+        top_k = 100 
+        
+        # 获取前 100 名的索引 (从低到高，所以后面要切片)
+        top_indices = similarities.argsort()[-top_k:][::-1]
+        
+        # 🔴 关键修改 2: 随机洗牌 (Shuffling)
+        # 将这 top_indices 转为列表
+        candidates_pool = top_indices.tolist()
+        
+        # 从这 100 个里，随机抽取 20 个给 AI
+        # 这样既保证了相关性(都在前100)，又保证了每次不一样
+        if len(candidates_pool) > 20:
+            selected_indices = random.sample(candidates_pool, 20)
+        else:
+            selected_indices = candidates_pool
+            
+        candidates = df.iloc[selected_indices]
+
     except Exception as e:
         return f"检索系统出错了: {e}", pd.DataFrame()
 
-    # === B. 增强 ===
+    # === B. 增强 (构建 Context) ===
     context_text = ""
     for idx, row in candidates.iterrows():
+        # 这里适配了中文数据库的字段，如果是英文版会自动显示英文
         context_text += f"""
         [酒名: {row['title']}]
         [原料: {row['ingredients']}]
         [步骤: {row['instructions']}]
-        [简介: {row['intro_philosophy'][:100]}]
+        [简介: {row.get('intro_philosophy', '')[:100]}]
         ---
         """
 
-    # === C. 生成 ===
+    # === C. 生成 (Prompt) ===
     combined_prompt = f"""
     【角色设定】
-    你是一位世界级的鸡尾酒专家。
+    你是一位见多识广的调酒师，擅长发掘冷门佳酿。
     
     【任务】
-    根据顾客需求："{user_query}"
-    从下面的【候选酒单】中挑选 3 款最合适的配方。
+    用户想喝："{user_query}"
+    从下面的【候选酒单】中，挑选 3 款推荐给用户。
+    
+    【策略要求】
+    1. **不要总是推荐最常见的酒**。如果候选名单里有独特、冷门但符合用户口味的配方，优先推荐它们，给用户惊喜。
+    2. 如果有多种基酒选择（如既有金酒又有伏特加），请展示多样性。
     
     【候选酒单】
     {context_text}
 
-    【回复要求】
-    1. 必须保留完整的原料用量和步骤。
-    2. 中文回答，优雅专业。
-    3. 格式：
-       ### 🍸 [酒名]
-       - **推荐理由**: ...
-       - **原料**: ...
-       - **步骤**: ...
+    【回复格式】
+    请用优雅的中文回复。
+    ### 🍸 [酒名]
+    - **推荐理由**: ...
+    - **原料**: ...
+    - **步骤**: ...
     """
 
     try:
         response = client.chat.completions.create(
             model=MODEL_NAME, 
             messages=[{"role": "user", "content": combined_prompt}],
-            temperature=0.7,
+            temperature=0.8, # 稍微调高温度，让 AI 说话更有创造力
             max_tokens=4096, 
-            presence_penalty=0.6
+            presence_penalty=0.6 # 惩罚重复内容
         )
         if not response.choices:
             return f"⚠️ API 返回空结果。", candidates
@@ -150,12 +175,11 @@ def get_ai_recommendation(user_query):
 
     except Exception as e:
         return f"❌ AI 连接报错: {str(e)}", pd.DataFrame()
-
 # ==========================================
 # 🎨 界面布局开始
 # ==========================================
 
-st.title("🍸 Punch AI 侍酒师")
+st.title("🍸 Punch AI 调酒师")
 
 # --- 🔍 侧边栏：超级模糊搜索 ---
 with st.sidebar:
@@ -216,7 +240,7 @@ if selected_recipe_id is not None:
     2. 简介用引用格式 (>)。
     3. 原料用列表，保留原始用量（如 2 oz），但在括号里估算 ml 数（1 oz ≈ 30ml）。
     4. 步骤必须清晰易懂。
-    5. 语气：像一位优雅的侍酒师在介绍。
+    5. 语气：像一位优雅的调酒师在介绍。
     """
 
     # 3. 显示加载动画并调用 AI
@@ -256,7 +280,7 @@ if selected_recipe_id is not None:
 
     st.markdown("---") # 分割线
 
-# --- 💬 聊天区域 (AI 侍酒师) ---
+# --- 💬 聊天区域 (AI 调酒师) ---
 st.caption(f"私人定制 · {MODEL_NAME}")
 
 if "messages" not in st.session_state:
