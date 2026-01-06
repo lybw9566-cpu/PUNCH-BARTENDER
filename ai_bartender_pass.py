@@ -1,4 +1,4 @@
-import random  # <--- 别忘了在文件最顶部的 import 区域加上这句
+import random  # <--- 1. 引入随机库，用于打破推荐的重复性
 import streamlit as st
 import pandas as pd
 import json
@@ -7,7 +7,6 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-
 
 # --- 0. 门卫系统 ---
 def check_access():
@@ -51,12 +50,13 @@ if not API_KEY:
     st.stop()
 
 client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
-DATA_FILE = "punch_recipes.jsonl"
+
+# 🔴 2. 这里的数据库文件必须是翻译好的中文版
+DATA_FILE = "punch_recipes_cn.jsonl"
 
 st.set_page_config(page_title="Punch AI 调酒师", page_icon="🍸", layout="wide") 
-# 注意：layout 改为 'wide' 可以让侧边栏和主内容更宽敞
 
-# --- 2. 数据加载与向量化 (保持 char_wb 模糊搜索) ---
+# --- 2. 数据加载与向量化 ---
 @st.cache_resource
 def load_data_and_vectors():
     data = []
@@ -70,7 +70,7 @@ def load_data_and_vectors():
 
     df = pd.DataFrame(data)
 
-    # 混合文本用于搜索
+    # 混合文本用于搜索 (包含标题、原料、标签)
     df['combined_text'] = (
         df['title'].fillna('') + " " + 
         df['ingredients'].astype(str) + " " + 
@@ -78,10 +78,12 @@ def load_data_and_vectors():
     )
 
     # 使用字符级 n-gram 实现模糊匹配
+    # 即使数据库是中文，保留这个设置也能很好地匹配英文酒名
     vectorizer = TfidfVectorizer(
         stop_words='english',
         analyzer='char_wb', 
-        ngram_range=(3, 5)
+        ngram_range=(3, 5),
+        max_features=5000 # 限制特征数量，防止加载过慢
     )
     
     tfidf_matrix = vectorizer.fit_transform(df['combined_text'])
@@ -94,27 +96,22 @@ if df is None:
     st.error(f"❌ 找不到数据文件 {DATA_FILE}")
     st.stop()
 
-# --- 3. 核心 AI 逻辑 (升级版：增加随机多样性) ---
+# --- 3. 核心 AI 逻辑 (已加入“鱼塘扩容”逻辑) ---
 def get_ai_recommendation(user_query):
     # === A. 检索 ===
     try:
         user_vec = vectorizer.transform([user_query])
         similarities = cosine_similarity(user_vec, tfidf_matrix).flatten()
         
-        # 🔴 关键修改 1: 扩大候选池 (鱼塘)
-        # 以前我们只取前 30 (argsort()[-30:])，它们永远是固定的。
-        # 现在我们取前 100 个，这些都是相关性不错的酒。
+        # 🔴 3. 扩大候选池 (鱼塘逻辑)
+        # 取前 100 个相关的结果
         top_k = 100 
-        
-        # 获取前 100 名的索引 (从低到高，所以后面要切片)
         top_indices = similarities.argsort()[-top_k:][::-1]
         
-        # 🔴 关键修改 2: 随机洗牌 (Shuffling)
-        # 将这 top_indices 转为列表
+        # 🔴 4. 随机洗牌 (Shuffling)
+        # 从这 100 个里随机抽 20 个，打破“总是推荐第一名”的魔咒
         candidates_pool = top_indices.tolist()
         
-        # 从这 100 个里，随机抽取 20 个给 AI
-        # 这样既保证了相关性(都在前100)，又保证了每次不一样
         if len(candidates_pool) > 20:
             selected_indices = random.sample(candidates_pool, 20)
         else:
@@ -128,7 +125,7 @@ def get_ai_recommendation(user_query):
     # === B. 增强 (构建 Context) ===
     context_text = ""
     for idx, row in candidates.iterrows():
-        # 这里适配了中文数据库的字段，如果是英文版会自动显示英文
+        # 直接读取中文数据
         context_text += f"""
         [酒名: {row['title']}]
         [原料: {row['ingredients']}]
@@ -148,14 +145,14 @@ def get_ai_recommendation(user_query):
     
     【策略要求】
     1. **不要总是推荐最常见的酒**。如果候选名单里有独特、冷门但符合用户口味的配方，优先推荐它们，给用户惊喜。
-    2. 如果有多种基酒选择（如既有金酒又有伏特加），请展示多样性。
+    2. 如果有多种基酒选择，请展示多样性。
+    3. 基于提供的数据直接回答，因为数据已经是中文的了。
     
     【候选酒单】
     {context_text}
 
     【回复格式】
-    请用优雅的中文回复。
-    ### 🍸 [酒名]
+    ### 🍸 [酒名] (保持英文原名)
     - **推荐理由**: ...
     - **原料**: ...
     - **步骤**: ...
@@ -165,9 +162,9 @@ def get_ai_recommendation(user_query):
         response = client.chat.completions.create(
             model=MODEL_NAME, 
             messages=[{"role": "user", "content": combined_prompt}],
-            temperature=0.8, # 稍微调高温度，让 AI 说话更有创造力
+            temperature=0.8, 
             max_tokens=4096, 
-            presence_penalty=0.6 # 惩罚重复内容
+            presence_penalty=0.6 
         )
         if not response.choices:
             return f"⚠️ API 返回空结果。", candidates
@@ -175,125 +172,97 @@ def get_ai_recommendation(user_query):
 
     except Exception as e:
         return f"❌ AI 连接报错: {str(e)}", pd.DataFrame()
+
 # ==========================================
 # 🎨 界面布局开始
 # ==========================================
 
 st.title("🍸 Punch AI 调酒师")
 
-# --- 🔍 侧边栏：超级模糊搜索 ---
+# --- 🔍 侧边栏：配方百科 (无翻译模块，直接显示) ---
 with st.sidebar:
     st.header("📖 配方百科全书")
-    # 1. 搜索框
-    search_query = st.text_input("🔍 搜索配方 (支持模糊拼写)", placeholder="例如: Bronx 或 margrita")
+    search_query = st.text_input("🔍 搜索配方 (支持模糊拼写)", placeholder="例如: Bronx")
     
     selected_recipe_id = None
     
     if search_query:
-        # 复用那个强大的向量搜索引擎
-        # 即使你输错 "Mrgarita"，它也能算出它是 Margarita
         search_vec = vectorizer.transform([search_query])
         sims = cosine_similarity(search_vec, tfidf_matrix).flatten()
         
         # 找出最相似的 10 个
         top_indices = sims.argsort()[-10:][::-1]
         
-        # 制作下拉菜单选项字典: { "酒名": ID }
         options_map = {}
         for i in top_indices:
             row = df.iloc[i]
-            # 如果相似度太低(小于0.1)，可能是噪音，不显示
             if sims[i] > 0.1:
                 options_map[f"{row['title']}"] = i
         
         if options_map:
             st.success(f"找到 {len(options_map)} 个相关结果:")
-            # 2. 下拉选择框
             selected_name = st.selectbox("👇 点击选择查看详情:", list(options_map.keys()))
             
             if selected_name:
                 selected_recipe_id = options_map[selected_name]
         else:
-            st.warning("🤔 未找到相似配方，请换个词试试")
+            st.warning("🤔 未找到相似配方")
 
 # ==========================================
-# 📋 主界面：智能翻译配方卡片
+# 📋 主界面：配方详情卡片 (静态显示，无需AI翻译)
 # ==========================================
 if selected_recipe_id is not None:
-    # 1. 获取原始英文数据
-    raw_data = df.iloc[selected_recipe_id]
+    # 🔴 5. 直接读取数据库里的中文数据
+    recipe_data = df.iloc[selected_recipe_id]
     
-    # 2. 构建翻译请求 Prompt
-    translation_prompt = f"""
-    【任务】
-    请将以下鸡尾酒配方翻译成中文，并按照 Markdown 格式排版。
-    
-    【原始数据】
-    Name: {raw_data['title']}
-    Intro: {raw_data['intro_philosophy']}
-    Ingredients: {raw_data['ingredients']}
-    Instructions: {raw_data['instructions']}
-    Tags: {raw_data.get('tags', '')}
-
-    【要求】
-    1. 标题用 H2 (##) 加 emoji。
-    2. 简介用引用格式 (>)。
-    3. 原料用列表，保留原始用量（如 2 oz），但在括号里估算 ml 数（1 oz ≈ 30ml）。
-    4. 步骤必须清晰易懂。
-    5. 语气：像一位优雅的调酒师在介绍。
-    """
-
-    # 3. 显示加载动画并调用 AI
     with st.container(border=True):
-        # 如果用户频繁点击，每次都翻译有点浪费，但在 Streamlit 里这是最简单的写法
-        # 如果你介意速度，可以使用 @st.cache_data 缓存翻译结果
+        col_close, col_title = st.columns([1, 9])
         
-        with st.spinner(f"正在将 {raw_data['title']} 翻译为中文..."):
-            try:
-                trans_response = client.chat.completions.create(
-                    model=MODEL_NAME, # 使用 gpt-4o-mini 速度极快
-                    messages=[{"role": "user", "content": translation_prompt}],
-                    temperature=0.3, # 翻译需要准确，温度调低
-                    max_tokens=2000
-                )
-                translated_content = trans_response.choices[0].message.content
-                
-                # 4. 展示翻译后的结果
-                # 关闭按钮 (其实只是清空选中状态，但在 Streamlit 需要重新加载)
-                col1, col2 = st.columns([9, 1])
-                with col2:
-                    if st.button("❌", help("关闭卡片")):
-                        selected_recipe_id = None
-                        st.rerun()
-                
-                # 渲染 AI 写好的 Markdown
-                st.markdown(translated_content)
-                
-                # 5. 在底部显示原始英文（折叠），方便核对
-                with st.expander("🔍 查看原始英文配方 (Original Recipe)"):
-                    st.write(raw_data.to_dict())
+        # 关闭按钮
+        with col_close:
+            if st.button("❌", key="close_btn"):
+                selected_recipe_id = None
+                st.rerun()
+
+        with col_title:
+            st.header(f"🍹 {recipe_data['title']}") # 标题保持英文
+        
+        # 简介 (数据库里已经是中文了)
+        st.info(f"💡 {recipe_data.get('intro_philosophy', '暂无简介')}")
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            st.subheader("🧂 原料 Ingredients")
+            # 兼容处理：如果是列表直接显示，如果是字符串则直接显示
+            ings = recipe_data['ingredients']
+            if isinstance(ings, list):
+                for ing in ings:
+                    st.write(f"• {ing}")
+            else:
+                st.write(ings)
                     
-            except Exception as e:
-                st.error(f"翻译服务开小差了: {e}")
-                # 如果翻译失败，兜底显示英文
-                st.write(raw_data)
+        with c2:
+            st.subheader("🥣 做法 Instructions")
+            st.write(recipe_data['instructions'])
+            
+        st.caption(f"标签: {recipe_data.get('tags', 'Classic')}")
+        
+    st.markdown("---") 
 
-    st.markdown("---") # 分割线
-
-# --- 💬 聊天区域 (AI 调酒师) ---
+# --- 💬 聊天区域 ---
 st.caption(f"私人定制 · {MODEL_NAME}")
 
 if "messages" not in st.session_state:
-    st.session_state.messages = [{"role": "assistant", "content": "您好！您可以在左侧搜索特定的配方卡片，也可以直接在这里告诉我您的口味，让我为您推荐。"}]
+    st.session_state.messages = [{"role": "assistant", "content": "您好！我是您的 AI 侍酒师。您可以直接点餐，或者在左侧查阅配方。"}]
 
 for msg in st.session_state.messages:
     st.chat_message(msg["role"]).write(msg["content"])
 
-if prompt := st.chat_input("描述您的口味，或让 AI 推荐..."):
+if prompt := st.chat_input("今天想喝点什么风味的？"):
     st.session_state.messages.append({"role": "user", "content": prompt})
     st.chat_message("user").write(prompt)
     with st.chat_message("assistant"):
-        with st.spinner("AI 正在思考..."):
+        with st.spinner("正在配方库中搜寻..."):
             ai_reply, related = get_ai_recommendation(prompt)
             st.markdown(ai_reply)
     st.session_state.messages.append({"role": "assistant", "content": ai_reply})
